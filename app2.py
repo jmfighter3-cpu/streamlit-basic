@@ -37,6 +37,10 @@ st.markdown("""
     div[data-testid="stNotification"] {
         border-radius: 12px;
     }
+    /* Streamlit 기본 사이드바 네비게이션(상단 파일명 목록 및 구분선) 숨기기 */
+    [data-testid="stSidebarNav"] {
+        display: none !important;
+    }
     /* 비밀번호 입력창의 눈 아이콘(보기/숨기기 토글 버튼) 완전 제거 */
     div[data-testid="stTextInputRootElement"] button:not([data-testid="stTextInputClearButton"]),
     div[data-testid="stTextInputRootElement"] button[aria-label*="password" i],
@@ -187,8 +191,8 @@ with st.sidebar:
     st.caption("멀티모달 챗봇 & 대화 관리 시스템")
     
     st.markdown("#### 🧭 메뉴")
-    st.page_link("app2.py", label="💬 AI 채팅 (Chat)", icon="💬")
-    st.page_link("pages/app2_history.py", label="📜 대화 내역 보관함 (History)", icon="📜")
+    st.page_link("app2.py", label="AI 채팅 (Chat)", icon="💬")
+    st.page_link("pages/app2_history.py", label="대화 내역 보관함 (History)", icon="📜")
     
     st.divider()
 
