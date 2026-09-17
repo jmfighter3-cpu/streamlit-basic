@@ -90,3 +90,4 @@ streamlit-basic/
 - **웹 프레임워크**: `Streamlit`
 - **AI API**: `OpenAI Python SDK` (Default: `gpt-5.6-luna`)
 - **데이터베이스**: `SQLite3`, `Pandas`
+
