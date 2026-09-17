@@ -2,6 +2,8 @@ import streamlit as st
 import os
 import base64
 import sqlite3
+from datetime import datetime
+import uuid
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -53,56 +55,113 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =============================================================
-# 1. 환경변수(.env) 로드 및 OpenAI API 키 읽기
+# 1. 환경변수(.env) 로드 (로컬 개발 편의용)
 # =============================================================
 load_dotenv()
-
-api_key = os.getenv("OPENAI_API_KEY")
+env_api_key = os.getenv("OPENAI_API_KEY")
 
 # .env에 공백이 포함된 경우도 유연하게 지원
-if not api_key and os.path.exists(".env"):
+if not env_api_key and os.path.exists(".env"):
     with open(".env", "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if "=" in line and ("OPENAI" in line.upper() and "KEY" in line.upper()):
-                api_key = line.split("=", 1)[1].strip()
+                env_api_key = line.split("=", 1)[1].strip()
                 break
 
 # =============================================================
-# 2. SQLite 데이터베이스 설정 및 헬퍼 함수
+# 2. SQLite 데이터베이스 설정 및 세션/대화 관리 함수
 # =============================================================
 DB_PATH = "chat_history.db"
 
 def init_db():
-    """SQLite 데이터베이스 및 채팅 내역 테이블을 생성합니다."""
+    """SQLite 데이터베이스 테이블(세션 및 메시지)을 초기화하고 마이그레이션합니다."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    
+    # 1) 세션 테이블 (최대 10개 세션 보관)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS chat_sessions (
+            session_id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            turn_count INTEGER DEFAULT 0
+        )
+    """)
+    
+    # 2) 메시지 테이블 (세션별 최대 100턴 = 200개 메시지 보관)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS chat_messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL DEFAULT 'default_session',
             role TEXT NOT NULL,
             content TEXT NOT NULL,
             has_image INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    
+    # 기존 DB 스키마에 session_id 컬럼이 없을 경우 자동 추가
+    cursor.execute("PRAGMA table_info(chat_messages)")
+    columns = [col[1] for col in cursor.fetchall()]
+    if "session_id" not in columns:
+        cursor.execute("ALTER TABLE chat_messages ADD COLUMN session_id TEXT DEFAULT 'default_session'")
+        
     conn.commit()
     conn.close()
 
-def get_message_count():
-    """SQLite DB에 저장된 총 메시지 개수를 반환합니다."""
+def cleanup_old_sessions():
+    """최대 10개의 세션만 유지하며, 10개를 초과하면 가장 오래된 세션부터 자동 영구 삭제(FIFO)합니다."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM chat_messages")
-    count = cursor.fetchone()[0]
+    cursor.execute("SELECT session_id FROM chat_sessions ORDER BY updated_at DESC")
+    sessions = cursor.fetchall()
+    
+    # 10개를 초과하는 오래된 세션 삭제
+    if len(sessions) > 10:
+        old_sessions = sessions[10:]
+        old_ids = [s[0] for s in old_sessions]
+        placeholders = ",".join("?" * len(old_ids))
+        cursor.execute(f"DELETE FROM chat_messages WHERE session_id IN ({placeholders})", old_ids)
+        cursor.execute(f"DELETE FROM chat_sessions WHERE session_id IN ({placeholders})", old_ids)
+        conn.commit()
+        
     conn.close()
-    return count
 
-def load_chat_history():
-    """SQLite DB에서 이전 대화 기록을 모두 불러옵니다."""
+def create_new_session(title="새로운 대화"):
+    """새로운 대화 세션을 생성하고 고유 session_id를 반환합니다."""
+    session_id = f"sess_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT role, content, has_image FROM chat_messages ORDER BY id ASC")
+    cursor.execute(
+        "INSERT INTO chat_sessions (session_id, title, turn_count) VALUES (?, ?, 0)",
+        (session_id, title)
+    )
+    conn.commit()
+    conn.close()
+    
+    # 10개 세션 초과 시 자동 FIFO 정리
+    cleanup_old_sessions()
+    return session_id
+
+def get_sessions():
+    """최근 업데이트된 세션 목록(최대 10개)을 반환합니다."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT session_id, title, turn_count, updated_at FROM chat_sessions ORDER BY updated_at DESC LIMIT 10")
+    sessions = cursor.fetchall()
+    conn.close()
+    return sessions
+
+def load_session_messages(session_id):
+    """특정 세션의 대화 내역을 불러옵니다."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT role, content, has_image FROM chat_messages WHERE session_id = ? ORDER BY id ASC",
+        (session_id,)
+    )
     rows = cursor.fetchall()
     conn.close()
     
@@ -115,26 +174,58 @@ def load_chat_history():
         })
     return messages
 
-def save_message(role, content, has_image=False):
-    """새로운 메시지를 SQLite DB에 저장합니다."""
+def save_message_to_db(session_id, role, content, has_image=False):
+    """메시지를 저장하고, 세션 내 100회(200개 메시지) 초과 시 가장 오래된 메시지부터 롤링 삭제합니다."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    
+    # 1. 세션 존재 여부 확인 및 제목 갱신
+    cursor.execute("SELECT session_id, title FROM chat_sessions WHERE session_id = ?", (session_id,))
+    sess = cursor.fetchone()
+    if not sess:
+        clean_title = content[:20] + "..." if len(content) > 20 else content
+        cursor.execute(
+            "INSERT INTO chat_sessions (session_id, title, turn_count) VALUES (?, ?, 0)",
+            (session_id, clean_title)
+        )
+    elif sess[1] in ("새로운 대화", "기존 대화 세션") and role == "user":
+        clean_title = content[:20] + "..." if len(content) > 20 else content
+        cursor.execute("UPDATE chat_sessions SET title = ? WHERE session_id = ?", (clean_title, session_id))
+
+    # 2. 메시지 삽입
     cursor.execute(
-        "INSERT INTO chat_messages (role, content, has_image) VALUES (?, ?, ?)",
-        (role, content, 1 if has_image else 0)
+        "INSERT INTO chat_messages (session_id, role, content, has_image) VALUES (?, ?, ?, ?)",
+        (session_id, role, content, 1 if has_image else 0)
+    )
+    
+    # 3. 세션당 최대 100회 대화 제한 (1회 = 질문+답변 = 2개 메시지 -> 최대 200개 메시지)
+    cursor.execute("SELECT id FROM chat_messages WHERE session_id = ? ORDER BY id ASC", (session_id,))
+    msg_ids = [row[0] for row in cursor.fetchall()]
+    if len(msg_ids) > 200:
+        excess = len(msg_ids) - 200
+        delete_ids = msg_ids[:excess]
+        placeholders = ",".join("?" * len(delete_ids))
+        cursor.execute(f"DELETE FROM chat_messages WHERE id IN ({placeholders})", delete_ids)
+
+    # 4. 세션 갱신 시각 및 대화 턴 수 업데이트
+    current_turns = min(len(msg_ids) // 2, 100)
+    cursor.execute(
+        "UPDATE chat_sessions SET updated_at = CURRENT_TIMESTAMP, turn_count = ? WHERE session_id = ?",
+        (current_turns, session_id)
     )
     conn.commit()
     conn.close()
 
-def clear_chat_history():
-    """SQLite DB의 모든 대화 기록을 삭제합니다."""
+def delete_session(session_id):
+    """특정 세션과 해당 대화 내역을 영구 삭제합니다."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM chat_messages")
+    cursor.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
+    cursor.execute("DELETE FROM chat_sessions WHERE session_id = ?", (session_id,))
     conn.commit()
     conn.close()
 
-# DB 테이블 초기화
+# DB 초기화 실행
 init_db()
 
 # =============================================================
@@ -171,19 +262,87 @@ def upload_doc_dialog():
 # =============================================================
 # 4. 세션 상태 초기화
 # =============================================================
+if "user_api_key" not in st.session_state:
+    st.session_state.user_api_key = ""
+
+if "current_session_id" not in st.session_state:
+    existing = get_sessions()
+    if existing:
+        st.session_state.current_session_id = existing[0][0]
+    else:
+        st.session_state.current_session_id = create_new_session("새로운 대화")
+
 if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {"role": "assistant", "content": "안녕하세요! 무엇이든 물어보세요. 이미지나 파일을 첨부하여 질문하실 수도 있습니다."}
-    ]
+    loaded = load_session_messages(st.session_state.current_session_id)
+    if loaded:
+        st.session_state.messages = loaded
+    else:
+        st.session_state.messages = [
+            {"role": "assistant", "content": "안녕하세요! AI Studio 챗봇입니다. 질문을 입력하거나 이미지를 첨부해 보세요!"}
+        ]
 
 if "attached_image" not in st.session_state:
     st.session_state.attached_image = None
-
 if "attached_file" not in st.session_state:
     st.session_state.attached_file = None
 
 # =============================================================
-# 5. 사이드바: 모델 설정 및 이전 대화 관리
+# 5. 배포 환경 키 등록 게이트 (키 미등록 시 동작 차단)
+# =============================================================
+if not st.session_state.user_api_key:
+    # 사이드바: 미인증 안내
+    with st.sidebar:
+        st.markdown("### ✨ AI Studio")
+        st.caption("멀티모달 챗봇 & 대화 관리 시스템")
+        st.divider()
+        st.markdown("#### 🔒 인증 필요")
+        st.info("AI 채팅을 시작하려면 우측 화면에서 본인의 OpenAI API 키를 먼저 등록해 주세요.")
+
+    # 메인 로그인/키 등록 카드
+    st.markdown("## 🔐 AI Studio 로그인 및 API Key 등록")
+    st.caption("배포된 웹 환경에서 안전하게 챗봇을 이용하기 위해 API 키를 등록합니다.")
+    
+    with st.container(border=True):
+        st.markdown("### 🔑 OpenAI API Key 등록")
+        st.write("본인의 OpenAI API 키(`sk-...`)를 입력하고 등록을 완료하면 AI 채팅이 활성화됩니다.")
+        
+        # 보안 취약점 안내 메시지 (로그인 페이지)
+        st.warning("""
+        🛡️ **보안 취약성 및 API 키 보호 안내 (필독)**
+        - **키 보관 원칙**: 입력하신 API 키는 **브라우저 세션 메모리(`st.session_state`)에만 임시 보관**되며, 서버나 데이터베이스에 절대 영구 저장되지 않습니다.
+        - **공용 환경 주의**: 학교, 카페, 공용 PC 등 타인과 공유하는 환경에서는 이용 후 사이드바의 **'🔓 로그아웃 / 키 해제'** 버튼을 반드시 눌러 키를 삭제해 주세요.
+        - **과금 방지**: 유출 시 무단 과금 피해가 발생할 수 있으므로, [OpenAI 대시보드](https://platform.openai.com/account/limits)에서 월별 사용 한도(Usage limits)를 설정해 두는 것을 강력히 권장합니다.
+        """)
+        
+        input_key = st.text_input(
+            label="OpenAI API 키 입력",
+            type="password",
+            placeholder="sk-proj-...",
+            help="OpenAI 플랫폼에서 발급받은 비밀 키(sk-...)를 입력하세요."
+        )
+        
+        col_btn1, col_btn2 = st.columns([2, 1])
+        with col_btn1:
+            if st.button("🚀 키 등록하고 AI 채팅 시작", type="primary", use_container_width=True):
+                clean_key = input_key.strip()
+                if clean_key.startswith("sk-") and len(clean_key) > 20:
+                    st.session_state.user_api_key = clean_key
+                    st.success("API 키가 성공적으로 등록되었습니다!")
+                    st.rerun()
+                else:
+                    st.error("올바른 형식의 OpenAI API 키(sk-...)를 입력해 주세요.")
+                    
+        with col_btn2:
+            # 로컬에 .env 키가 있는 경우 개발 편의 버튼 제공
+            if env_api_key:
+                if st.button("⚡ .env 키로 빠른 시작", use_container_width=True, help="로컬 환경변수에 저장된 키를 사용합니다."):
+                    st.session_state.user_api_key = env_api_key
+                    st.rerun()
+
+    st.stop()  # 키가 등록되기 전까지 아래 채팅 로직의 실행을 안전하게 차단합니다!
+
+# =============================================================
+# 6. 사이드바: 네비게이션, 세션 관리 및 모델 설정
 # =============================================================
 with st.sidebar:
     # 1. 일관된 브랜드 헤더 및 네비게이션 메뉴 (최상단)
@@ -196,23 +355,61 @@ with st.sidebar:
     
     st.divider()
 
-    # 2. 채팅 환경 설정
-    st.markdown("#### ⚙️ 채팅 환경 설정")
-    if api_key:
-        st.success("API 키 자동 연동됨 (.env)", icon="🔑")
-    else:
-        st.warning("API 키를 입력해주세요", icon="⚠️")
+    # 2. 인증 상태 및 로그아웃
+    st.markdown("#### 🔐 보안 및 인증")
+    st.success("API 키 활성화됨", icon="🔑")
+    if st.button("🔓 로그아웃 / 키 해제", use_container_width=True, help="등록된 API 키를 비우고 세션을 안전하게 종료합니다."):
+        st.session_state.user_api_key = ""
+        st.session_state.messages = []
+        st.session_state.attached_image = None
+        st.session_state.attached_file = None
+        st.rerun()
 
-    # API 키 입력창: 눈 아이콘은 CSS로 제거되며, .env에 키가 있으면 원본 키를 value에 노출하지 않아 브라우저 유출을 방지
-    api_key_input = st.text_input(
-        label="OpenAI API 키",
-        value="",
-        placeholder="•••••••••••••••• (환경변수 .env 키 적용 중)" if api_key else "sk-proj-...",
-        type="password",
-        help="OpenAI API 키를 직접 입력하거나 .env 파일에 등록해 두세요."
-    )
+    st.divider()
 
-    # 모델 선택
+    # 3. 대화 세션 관리 (최대 10개)
+    st.markdown("#### 📂 대화 세션 (최대 10개)")
+    if st.button("➕ 새 대화 시작", type="primary", use_container_width=True):
+        new_sid = create_new_session("새로운 대화")
+        st.session_state.current_session_id = new_sid
+        st.session_state.messages = [
+            {"role": "assistant", "content": "새로운 대화 세션이 시작되었습니다. 질문을 입력해 주세요!"}
+        ]
+        st.session_state.attached_image = None
+        st.session_state.attached_file = None
+        st.rerun()
+        
+    all_sessions = get_sessions()
+    session_options = [s[0] for s in all_sessions]
+    session_titles = {s[0]: f"{s[1]} ({s[2]}/100회)" for s in all_sessions}
+    
+    # 현재 세션이 목록에 없으면 첫 번째 세션으로 보정
+    if st.session_state.current_session_id not in session_options and session_options:
+        st.session_state.current_session_id = session_options[0]
+        
+    if session_options:
+        curr_idx = session_options.index(st.session_state.current_session_id) if st.session_state.current_session_id in session_options else 0
+        selected_sid = st.selectbox(
+            label="세션 목록 선택",
+            options=session_options,
+            index=curr_idx,
+            format_func=lambda sid: session_titles.get(sid, sid),
+            help="원하는 대화 세션을 선택해 이전 대화를 이어갈 수 있습니다."
+        )
+        
+        if selected_sid != st.session_state.current_session_id:
+            st.session_state.current_session_id = selected_sid
+            loaded = load_session_messages(selected_sid)
+            st.session_state.messages = loaded if loaded else [
+                {"role": "assistant", "content": "대화 세션을 불러왔습니다. 질문을 입력해 주세요!"}
+            ]
+            st.session_state.attached_image = None
+            st.session_state.attached_file = None
+            st.rerun()
+
+    st.divider()
+
+    # 4. 모델 선택
     st.markdown("#### 🤖 모델 엔진 선택")
     available_models = [
         "gpt-5.6-luna",   # ⚡ 빠르고 경제적인 경량 모델 (기본값)
@@ -234,51 +431,38 @@ with st.sidebar:
     }
     st.caption(model_descriptions.get(selected_model, ""))
 
-    st.divider()
-
-    # 3. 대화 내역 관리 섹션
-    st.markdown("#### 💾 대화 관리 (SQLite)")
-    saved_count = get_message_count()
-    st.caption(f"DB에 저장된 메시지: **{saved_count}개**")
-
-    col_h1, col_h2 = st.columns(2)
-    with col_h1:
-        if st.button("📥 불러오기", use_container_width=True, help="SQLite DB에서 이전 대화 복원"):
-            history = load_chat_history()
-            if history:
-                st.session_state.messages = history
-                st.rerun()
-    with col_h2:
-        if st.button("🗑️ 초기화", use_container_width=True, help="DB와 화면 대화 내역 모두 비우기"):
-            clear_chat_history()
-            st.session_state.messages = [
-                {"role": "assistant", "content": "대화 내역이 초기화되었습니다. 새로운 질문을 입력해 주세요!"}
-            ]
-            st.session_state.attached_image = None
-            st.session_state.attached_file = None
-            st.rerun()
-
 # =============================================================
-# 6. 메인 채팅 화면 및 정돈된 툴바
+# 7. 메인 채팅 화면 및 정돈된 툴바
 # =============================================================
+# 현재 세션 제목 및 턴 수 계산
+curr_title = session_titles.get(st.session_state.current_session_id, "대화 세션")
+user_turn_count = len([m for m in st.session_state.messages if m["role"] == "user"])
+
 st.markdown("## 💬 AI Studio Multimodal Chat")
-st.caption(f"엔진: **:blue[{selected_model}]** · 질문에 이미지나 문서 파일을 첨부해 분석해 보세요.")
+st.caption(f"엔진: **:blue[{selected_model}]** · 세션: **{curr_title}**")
 
-# 첨부 액션 툴바
-col_tool1, col_tool2, col_tool_info = st.columns([1.2, 1.2, 2.6])
+# 보안 취약점 안내 메시지 (채팅 기능)
+with st.expander("🔒 **개인정보 및 기밀 데이터 보안 수칙 (필독)**", expanded=False):
+    st.markdown("""
+    - **데이터 전송 주의**: 대화 내용 및 첨부 파일(이미지, 문서)은 AI 답변 생성을 위해 OpenAI 서버로 암호화 전송됩니다.
+    - **민감 정보 입력 금지**: 주민등록번호, 계좌번호, 비밀번호, 사내 기밀 등 민감한 개인정보나 대외비 문서는 절대 입력하지 마세요.
+    - **자동 보관 정책**: 한 세션당 최대 **100회(턴)**까지 보관되며, 초과 시 가장 오래된 대화부터 자동 순환(롤링)됩니다.
+    """)
 
-with col_tool1:
-    if st.button("📷 이미지 첨부", use_container_width=True):
-        upload_image_dialog()
-
-with col_tool2:
-    if st.button("📄 문서 첨부", use_container_width=True):
-        upload_doc_dialog()
-
-with col_tool_info:
-    # 첨부된 상태를 우측에 컴팩트하게 배지 형태로 알림
-    if st.session_state.attached_image or st.session_state.attached_file:
-        st.info("📌 전송 대기 중인 파일이 있습니다.", icon="📎")
+# 첨부 액션 툴바 및 진행 상태 (Streamlit container 활용)
+with st.container(border=True):
+    col_tool1, col_tool2, col_turn = st.columns([1.2, 1.2, 2.6])
+    
+    with col_tool1:
+        if st.button("📷 이미지 첨부", use_container_width=True):
+            upload_image_dialog()
+            
+    with col_tool2:
+        if st.button("📄 문서 첨부", use_container_width=True):
+            upload_doc_dialog()
+            
+    with col_turn:
+        st.caption(f"📊 세션 대화 진행: **{user_turn_count} / 100회** (질문+답변=1회)")
 
 # 현재 첨부 대기 중인 항목 카드 표시
 if st.session_state.attached_image or st.session_state.attached_file:
@@ -305,7 +489,7 @@ if st.session_state.attached_image or st.session_state.attached_file:
 st.divider()
 
 # =============================================================
-# 7. 대화 내역 렌더링 (커스텀 아바타 적용)
+# 8. 대화 내역 렌더링 (커스텀 아바타 적용)
 # =============================================================
 for msg in st.session_state.messages:
     avatar_icon = "👤" if msg["role"] == "user" else "✨"
@@ -315,7 +499,7 @@ for msg in st.session_state.messages:
             st.image(msg["image_bytes"], width=280)
 
 # =============================================================
-# 8. 사용자 채팅 입력 및 응답 생성
+# 9. 사용자 채팅 입력 및 응답 생성
 # =============================================================
 user_prompt = st.chat_input("메시지를 입력하세요...")
 
@@ -335,16 +519,15 @@ if user_prompt:
         if cur_file:
             st.caption(f"📎 첨부 파일: {cur_file.name}")
 
-    # 2) 세션 및 SQLite DB에 저장
+    # 2) 세션 및 SQLite DB에 사용자 메시지 저장
     user_record = {"role": "user", "content": user_prompt}
     if attached_img_bytes:
         user_record["image_bytes"] = attached_img_bytes
     st.session_state.messages.append(user_record)
-    save_message("user", user_prompt, has_image=has_img)
+    save_message_to_db(st.session_state.current_session_id, "user", user_prompt, has_image=has_img)
 
     # 3) OpenAI API 호출용 페이로드 조립
-    active_key = api_key_input if api_key_input else api_key
-    openai_client = OpenAI(api_key=active_key)
+    openai_client = OpenAI(api_key=st.session_state.user_api_key)
 
     user_content = [{"type": "text", "text": user_prompt}]
 
@@ -375,9 +558,9 @@ if user_prompt:
         )
         response_text = st.write_stream(response_stream)
 
-    # 5) AI 답변 세션 및 SQLite DB 저장
+    # 5) AI 답변 세션 및 SQLite DB 저장 (턴 수 갱신 및 100회 한도 롤링 적용)
     st.session_state.messages.append({"role": "assistant", "content": response_text})
-    save_message("assistant", response_text, has_image=False)
+    save_message_to_db(st.session_state.current_session_id, "assistant", response_text, has_image=False)
 
     # 6) 첨부 상태 초기화 후 새로고침
     st.session_state.attached_image = None
