@@ -1,0 +1,35 @@
+# Python & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments
+.venv/
+env/
+venv/
+ENV/
+
+# Secrets & Environment Variables
+.env
+.env.*
+!.env.example
+
+# Local SQLite Database
+*.db
+*.sqlite
+*.sqlite3
+chat_history.db
+
+# Streamlit
+.streamlit/secrets.toml
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
