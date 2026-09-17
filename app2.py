@@ -37,6 +37,14 @@ st.markdown("""
     div[data-testid="stNotification"] {
         border-radius: 12px;
     }
+    /* 비밀번호 입력창의 눈 아이콘(보기/숨기기 토글 버튼) 완전 제거 */
+    div[data-testid="stTextInputRootElement"] button:not([data-testid="stTextInputClearButton"]),
+    div[data-testid="stTextInputRootElement"] button[aria-label*="password" i],
+    div[data-testid="stTextInputRootElement"] button[aria-label*="Password"] {
+        display: none !important;
+        visibility: hidden !important;
+        pointer-events: none !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -187,15 +195,17 @@ with st.sidebar:
     # 2. 채팅 환경 설정
     st.markdown("#### ⚙️ 채팅 환경 설정")
     if api_key:
-        st.success("API 키 자동 연동됨", icon="🔑")
+        st.success("API 키 자동 연동됨 (.env)", icon="🔑")
     else:
         st.warning("API 키를 입력해주세요", icon="⚠️")
 
+    # API 키 입력창: 눈 아이콘은 CSS로 제거되며, .env에 키가 있으면 원본 키를 value에 노출하지 않아 브라우저 유출을 방지
     api_key_input = st.text_input(
         label="OpenAI API 키",
-        value=api_key if api_key else "",
+        value="",
+        placeholder="•••••••••••••••• (환경변수 .env 키 적용 중)" if api_key else "sk-proj-...",
         type="password",
-        help="OpenAI API 키를 입력하거나 .env 파일에 등록해 두세요."
+        help="OpenAI API 키를 직접 입력하거나 .env 파일에 등록해 두세요."
     )
 
     # 모델 선택
