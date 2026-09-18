@@ -1,3 +1,3 @@
 @echo off
-uv run python app3.py
+uv run python app2.py
 
