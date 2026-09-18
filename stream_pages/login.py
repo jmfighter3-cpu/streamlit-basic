@@ -31,12 +31,18 @@ else:
         st.json(dict(st.user))
 
     # 3. 로그아웃 (st.logout)
-    if st.button("로그아웃", icon=":material/logout:"):
-        st.logout()
+    col_l1, col_l2 = st.columns([1, 1])
+    with col_l1:
+        if st.button("🚀 대시보드로 이동하기 (st.switch_page)", type="primary", icon=":material/monitoring:"):
+            st.switch_page("dashboard.py")
+    with col_l2:
+        if st.button("로그아웃", icon=":material/logout:"):
+            st.logout()
 
-    # 로그인 완료 후 다른 페이지 이동 링크 제공
+    # 로그인 완료 후 다른 페이지 이동 링크 제공 (st.page_link)
     st.divider()
-    st.caption("🧭 빠른 페이지 이동")
-    st.page_link("navigation_page.py", label="네비게이션 쇼케이스 페이지로 이동", icon="🧭")
+    st.caption("🧭 빠른 페이지 바로가기 (st.page_link)")
+    st.page_link("settings.py", label="환경설정 페이지로 이동", icon=":material/settings:")
+
 
 

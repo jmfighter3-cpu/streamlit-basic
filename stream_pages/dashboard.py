@@ -42,11 +42,13 @@ st.line_chart(chart_data)
 
 st.divider()
 
-# 3. 다른 페이지 바로가기 링크 (st.page_link)
-st.caption("🧭 빠른 페이지 이동")
+# 3. 다른 페이지 바로가기 링크 (st.page_link 실전 활용)
+st.divider()
+st.caption("🧭 빠른 메뉴 바로가기 (st.page_link)")
 col_link1, col_link2 = st.columns(2)
 with col_link1:
-    st.page_link("settings.py", label="환경설정 페이지로 이동", icon="⚙️")
+    st.page_link("settings.py", label="환경설정 변경하기", icon=":material/settings:")
 with col_link2:
-    st.page_link("navigation_page.py", label="네비게이션 쇼케이스로 이동", icon="🧭")
+    st.page_link("logout.py", label="로그아웃 페이지로 이동", icon=":material/logout:")
+
 

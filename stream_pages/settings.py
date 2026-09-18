@@ -35,10 +35,14 @@ st.write(f"설정된 알림: 하루 최대 **{alert_freq}회**")
 
 st.divider()
 
-# 4. 코드로 다른 페이지 즉시 전환 (st.switch_page)
-st.subheader("🔄 코드로 페이지 즉시 전환 (st.switch_page)")
-st.markdown("버튼을 누르면 파이썬 코드가 실행되면서 대시보드 페이지로 즉시 화면이 전환됩니다.")
+# 설정 저장 후 대시보드로 자동 이동 (st.switch_page 실전 활용)
+col_btn1, col_btn2 = st.columns([2, 1])
+with col_btn1:
+    if st.button("💾 설정 저장하고 Overview로 돌아가기", type="primary", icon=":material/save:"):
+        st.toast("✅ 설정이 안전하게 저장되었습니다!")
+        st.switch_page("dashboard.py")
 
-if st.button("📊 대시보드 페이지로 즉시 전환하기", type="primary"):
-    st.switch_page("dashboard.py")
+with col_btn2:
+    st.page_link("dashboard.py", label="취소하고 돌아가기", icon=":material/arrow_back:")
+
 

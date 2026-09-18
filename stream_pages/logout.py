@@ -17,9 +17,13 @@ if is_logged_in:
 
     st.markdown("아래 버튼을 누르면 세션 쿠키가 삭제되고 로그아웃됩니다.")
 
-    # 공식 st.logout() 호출 버튼
-    if st.button("🔴 로그아웃 실행", icon=":material/logout:", type="primary"):
-        st.logout()
+    col_o1, col_o2 = st.columns([1, 1])
+    with col_o1:
+        # 공식 st.logout() 호출 버튼
+        if st.button("🔴 로그아웃 실행", icon=":material/logout:", type="primary"):
+            st.logout()
+    with col_o2:
+        st.page_link("dashboard.py", label="취소하고 Overview로 가기", icon=":material/arrow_back:")
 
 else:
     st.success("현재 안전하게 로그아웃된 상태입니다.")
