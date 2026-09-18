@@ -158,7 +158,7 @@ with st.sidebar:
     st.caption("멀티모달 챗봇 & 대화 관리 시스템")
     
     st.markdown("#### 🧭 메뉴")
-    st.page_link("app2.py", label="AI 채팅 (Chat)", icon="💬")
+    st.page_link("app2-1.py", label="AI 채팅 (Chat)", icon="💬")
     st.page_link("pages/app2_history.py", label="대화 내역 보관함 (History)", icon="📜")
     
     st.divider()
