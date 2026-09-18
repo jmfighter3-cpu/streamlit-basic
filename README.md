@@ -12,12 +12,17 @@ Streamlit의 다양한 기본 위젯 및 레이아웃을 학습할 수 있는 �
    - **데이터 및 시각화**: 테이블, 데이터프레임, 메트릭 카드, 차트(선, 막대, 지도 등)
    - **상태 & 피드백**: 프로그레스 바, 스피너, 알림 배너, 토스트 알림, 축하 효과(`st.balloons`, `st.snow`)
 
-2. **🤖 멀티모달 AI Studio & 대화 보관함 (`app2.py`)**
+2. **🧭 Google OAuth 인증 & 실무형 멀티페이지 네비게이션 (`app2.py`)**
+   - **Google OIDC 로그인/로그아웃**: Streamlit 공식 인증(`st.login`, `st.logout`, `st.user`) 및 `.streamlit/secrets.toml` 연동
+   - **동적 네비게이션 (`st.navigation`, `st.Page`)**: 로그인 상태에 따라 변화하는 사이드바 메뉴 (`Your account: [Log in/Log out, Settings]`, `Reports: [Overview]`)
+   - **유기적 화면 전환**: `st.page_link`(빠른 바로가기 링크)와 `st.switch_page`(설정 저장 후 자동 대시보드 복귀)
+   - **Streamlit Community Cloud 배포 진입점**
+
+3. **🤖 멀티모달 AI Studio & 대화 보관함 (`app2-1.py`)**
    - **OpenAI 최신 모델 지원**: `gpt-5.6-luna` (기본), `gpt-5.6-terra`, `gpt-5.6-sol`, `gpt-5.5`
    - **멀티모달 기능**: 이미지(`jpg`, `png` 등) 및 문서 파일 분석 기능
-   - **팝업 업로더**: 모달 다이얼로그 기반 드래그 앤 드롭 파일 첨부
    - **영구 보관 (SQLite)**: 대화 내역이 로컬 SQLite DB(`chat_history.db`)에 안전하게 저장 및 복원
-   - **통일된 다중 페이지 네비게이션**: 사이드바 최상단의 일관된 메뉴를 통해 채팅과 과거 대화 보관함(`pages/app2_history.py`)을 부드럽게 탐색
+   - **과거 대화 보관함**: `pages/app2_history.py` (또는 `app2-1_history.py`)
 
 ---
 
@@ -31,30 +36,24 @@ Streamlit의 다양한 기본 위젯 및 레이아웃을 학습할 수 있는 �
 uv sync
 ```
 
-### 2. 환경 변수 설정 (`.env`)
-AI 챗봇 기능(`app2.py`)을 사용하려면 OpenAI API 키가 필요합니다:
-
-```bash
-# 템플릿 파일을 복사하여 .env 생성
-cp .env.example .env
-```
-`.env` 파일에 발급받은 본인의 OpenAI API 키를 입력합니다:
-```env
-OPENAI_API_KEY=sk-your-actual-api-key-here
-```
-
-### 3. 애플리케이션 실행
+### 2. 애플리케이션 실행
 
 - **1) Streamlit 기본 컴포넌트 쇼케이스 실행**:
   ```bash
   uv run streamlit run app.py
-  # 또는 Windows 배치 파일 실행: run.bat
+  # 또는 Windows 배치 파일: run.bat
   ```
 
-- **2) 멀티모달 AI Studio 챗봇 실행**:
+- **2) Google 인증 & 멀티페이지 네비게이션 실행**:
   ```bash
-  uv run streamlit run app2.py
-  # 또는 Windows 배치 파일 실행: run2.bat
+  uv run python app2.py
+  # 또는 Windows 배치 파일: run2.bat (또는 run3.bat)
+  ```
+
+- **3) 멀티모달 AI Studio 챗봇 실행**:
+  ```bash
+  uv run streamlit run app2-1.py
+  # 또는 Windows 배치 파일: run2-1.bat
   ```
 
 ---
@@ -64,9 +63,11 @@ OPENAI_API_KEY=sk-your-actual-api-key-here
 ```text
 streamlit-basic/
 ├── app.py                  # Streamlit 기초 위젯 종합 쇼케이스
-├── app2.py                 # 멀티모달 AI 챗봇 메인 애플리케이션
+├── app2.py                 # Google 인증 & 네비게이션 메인 진입점 (st.App)
+├── stream_pages/           # 네비게이션 서브 페이지 (main, login, logout, dashboard, settings)
+├── app2-1.py               # 멀티모달 AI 챗봇 메인 애플리케이션 (기존 app2.py)
 ├── pages/
-│   └── app2_history.py     # 과거 대화 내역 조회 및 통계/관리 페이지
+│   └── app2_history.py     # AI 챗봇 과거 대화 내역 조회 및 통계/관리 페이지
 ├── widgets/                # 위젯 카테고리별 모듈화 코드
 │   ├── inputs/             # 입력 컴포넌트
 │   ├── layouts/            # 레이아웃 컴포넌트
