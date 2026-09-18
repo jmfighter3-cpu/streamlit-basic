@@ -1,5 +1,4 @@
 [client]
-# Streamlit의 기본 상단 다중 페이지 네비게이션(파일명 목록)을 비활성화하고
-# 커스텀 메뉴(st.page_link)만 표시하도록 설정합니다.
-showSidebarNavigation = false
+# st.navigation 사이드바 메뉴가 정상적으로 표시되도록 true로 설정합니다.
+showSidebarNavigation = true
 
